@@ -1,0 +1,577 @@
+# Kubernetes Notes – Lecture 13
+## Temporary (Ephemeral) Volumes & Projected Volumes
+
+---
+
+# Types of Kubernetes Volumes
+
+```
+Kubernetes Volumes
+│
+├── Temporary (Ephemeral Volumes)
+│   ├── ConfigMap
+│   ├── Secret
+│   ├── Downward API
+│   └── Projected Volume
+│
+└── Permanent (Persistent Volumes)
+```
+
+- **Temporary (Ephemeral) Volumes**
+  - Exist only while the Pod is running.
+  - Data is lost when the Pod is deleted.
+
+- **Persistent Volumes**
+  - Data survives Pod deletion.
+  - Used for databases and long-term storage.
+
+---
+
+# ConfigMap
+
+A **ConfigMap** stores non-sensitive configuration data.
+
+Example:
+- Application Name
+- Color
+- Environment
+- Feature Flags
+
+Instead of rebuilding the Docker image, configuration can be changed using ConfigMaps.
+
+```
+Predefined Image
+       │
+ Dockerfile
+       │
+ Kubernetes ConfigMap
+```
+
+---
+
+## Step 1: Create a Configuration File
+
+```bash
+vi /tmp/app-config.txt
+```
+
+Contents:
+
+```text
+app=blue
+color=Indian
+```
+
+---
+
+## Step 2: Create ConfigMap
+
+```bash
+kubectl create configmap app-config \
+--from-file=/tmp/app-config.txt
+```
+
+Check ConfigMap
+
+```bash
+kubectl get configmap app-config -o yaml
+```
+
+---
+
+## Step 3: Mount ConfigMap as Volume
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: configmap-volume-pod
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    volumeMounts:
+    - name: config-volume
+      mountPath: /etc/config
+      readOnly: true
+
+  volumes:
+  - name: config-volume
+    configMap:
+      name: app-config
+```
+
+Create Pod
+
+```bash
+kubectl apply -f pod.yaml
+```
+
+---
+
+## Verify Inside Container
+
+```bash
+kubectl exec -it configmap-volume-pod -- /bin/bash
+
+df -hT
+
+cd /etc/config
+
+ls
+
+cat app-config.txt
+```
+
+The ConfigMap data appears as files.
+
+---
+
+## Edit ConfigMap
+
+```bash
+kubectl edit configmap app-config
+```
+
+Change
+
+```text
+app=blue
+color=Indian
+```
+
+to
+
+```text
+app=green
+color=Indian
+```
+
+Verify
+
+```bash
+kubectl get configmap app-config -o yaml
+```
+
+### Important
+
+- ConfigMap exists even if the Pod is deleted.
+- When ConfigMap is mounted as a **Volume**, file contents update automatically after a short time.
+
+---
+
+# ConfigMap Using Environment Variables
+
+Create ConfigMap
+
+```bash
+kubectl create configmap app-env-config \
+--from-literal=APP_COLOR=blue \
+--from-literal=APP_MODE=production
+```
+
+Pod YAML
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: configmap-env-pod
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    envFrom:
+    - configMapRef:
+        name: app-env-config
+```
+
+Check Environment Variables
+
+```bash
+kubectl exec -it configmap-env-pod -- /bin/bash
+
+env
+```
+
+---
+
+## ConfigMap Volume vs Environment Variable
+
+| ConfigMap Volume | Environment Variable |
+|------------------|----------------------|
+| Updates automatically | Does not update automatically |
+| No Pod restart required | Pod restart required |
+| Appears as files | Appears as environment variables |
+
+---
+
+# Secret
+
+Secrets store **sensitive information**.
+
+Examples
+
+- Passwords
+- API Keys
+- Database Credentials
+- Tokens
+
+---
+
+## Create Secret
+
+```bash
+kubectl create secret generic my-secret \
+--from-literal=username=admin \
+--from-literal=password='s3crtp@ss'
+```
+
+View Secret
+
+```bash
+kubectl get secret my-secret -o yaml
+```
+
+---
+
+## Mount Secret as Volume
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secret-volume-pod
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    volumeMounts:
+    - name: secret-volume
+      mountPath: /etc/secret
+      readOnly: true
+
+  volumes:
+  - name: secret-volume
+    secret:
+      secretName: my-secret
+```
+
+Inside container
+
+```bash
+kubectl exec -it secret-volume-pod -- /bin/bash
+
+cd /etc/secret
+
+ls
+
+cat username
+
+cat password
+```
+
+---
+
+# Downward API
+
+Downward API exposes Pod metadata inside the container.
+
+Information available
+
+- Pod Name
+- Namespace
+- Labels
+- Annotations
+- Pod IP
+- Node Name
+
+Metadata can be exposed through
+
+- Environment Variables
+- Volume Files
+
+---
+
+## Downward API Volume Example
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: downwardapi-pod
+  labels:
+    app: nginx
+    env: dev
+
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    volumeMounts:
+    - name: pod-info
+      mountPath: /etc/podinfo
+      readOnly: true
+
+  volumes:
+  - name: pod-info
+    downwardAPI:
+      items:
+      - path: pod-name
+        fieldRef:
+          fieldPath: metadata.name
+
+      - path: pod-namespace
+        fieldRef:
+          fieldPath: metadata.namespace
+
+      - path: labels
+        fieldRef:
+          fieldPath: metadata.labels
+```
+
+Create Pod
+
+```bash
+kubectl apply -f pod.yaml
+```
+
+Verify
+
+```bash
+kubectl exec -it downwardapi-pod -- /bin/bash
+
+df -hT
+
+cd /etc/podinfo
+
+ls
+
+cat pod-name
+
+cat pod-namespace
+
+cat labels
+```
+
+---
+
+# Projected Volume
+
+Projected Volume combines multiple volume sources into a **single directory**.
+
+It can combine
+
+- ConfigMap
+- Secret
+- Downward API
+- ServiceAccount Token
+
+---
+
+## Create ConfigMap
+
+```bash
+kubectl create configmap my-configmap \
+--from-literal=app-mode=debug
+```
+
+---
+
+## Create Secret
+
+```bash
+kubectl create secret generic my-secret \
+--from-literal=password="P@ssw0rd!"
+```
+
+---
+
+## Projected Volume Example
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: projected-volume-pod
+  labels:
+    app: nginx
+    env: dev
+
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    volumeMounts:
+    - name: projected-volume
+      mountPath: /projected
+      readOnly: true
+
+  volumes:
+  - name: projected-volume
+    projected:
+      sources:
+      - configMap:
+          name: my-configmap
+
+      - secret:
+          name: my-secret
+
+      - downwardAPI:
+          items:
+          - path: pod-name
+            fieldRef:
+              fieldPath: metadata.name
+
+          - path: pod-namespace
+            fieldRef:
+              fieldPath: metadata.namespace
+
+          - path: labels
+            fieldRef:
+              fieldPath: metadata.labels
+
+      - serviceAccountToken:
+          path: token
+          expirationSeconds: 3600
+          audience: api
+```
+
+Verify
+
+```bash
+kubectl exec -it projected-volume-pod -- /bin/bash
+
+cd /projected
+
+ls
+
+cat app-mode
+
+cat password
+
+cat pod-name
+
+cat token
+```
+
+---
+
+# Commands Used
+
+```bash
+kubectl create configmap app-config --from-file=/tmp/app-config.txt
+
+kubectl get configmap
+
+kubectl get configmap app-config -o yaml
+
+kubectl edit configmap app-config
+
+kubectl create secret generic my-secret \
+--from-literal=username=admin \
+--from-literal=password='s3crtp@ss'
+
+kubectl get secret my-secret -o yaml
+
+kubectl apply -f pod.yaml
+
+kubectl exec -it <pod-name> -- /bin/bash
+
+df -hT
+
+env
+
+ls
+
+cat <file-name>
+```
+
+---
+
+# Interview Questions
+
+### What is ConfigMap?
+
+ConfigMap stores non-sensitive configuration data separately from the container image.
+
+---
+
+### What is Secret?
+
+Secret stores sensitive data such as passwords, API keys, certificates, and tokens.
+
+---
+
+### Difference between ConfigMap and Secret
+
+| ConfigMap | Secret |
+|-----------|--------|
+| Stores normal configuration | Stores sensitive information |
+| Data stored as plain text | Data stored as Base64 encoded |
+| Used for application configuration | Used for credentials |
+
+---
+
+### ConfigMap Volume vs Environment Variable
+
+| Volume | Environment Variable |
+|---------|----------------------|
+| Updates automatically | Requires Pod restart |
+| Data available as files | Data available as variables |
+
+---
+
+### What is Downward API?
+
+Downward API exposes Pod metadata inside the container.
+
+Examples:
+- Pod Name
+- Namespace
+- Labels
+- Node Name
+- Pod IP
+
+---
+
+### What is a Projected Volume?
+
+Projected Volume combines multiple sources into one directory.
+
+Supported Sources
+
+- ConfigMap
+- Secret
+- Downward API
+- ServiceAccount Token
+
+---
+
+# Summary
+
+```
+Temporary (Ephemeral) Volumes
+│
+├── ConfigMap
+│      ├── Stores configuration
+│      ├── Can be mounted as Volume
+│      └── Can be exposed as Environment Variables
+│
+├── Secret
+│      ├── Stores sensitive data
+│      └── Mounted as Volume
+│
+├── Downward API
+│      ├── Exposes Pod metadata
+│      ├── Pod Name
+│      ├── Namespace
+│      ├── Labels
+│      └── Node Information
+│
+└── Projected Volume
+       ├── ConfigMap
+       ├── Secret
+       ├── Downward API
+       └── ServiceAccount Token
+```
