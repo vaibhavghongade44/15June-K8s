@@ -1,0 +1,474 @@
+# Kubernetes Lecture 10 – Pod Lifecycle, OverlayFS, Multi-Container Pods & Projected Volumes
+
+## 1. Pod Creation Flow in Kubernetes
+
+When a Pod is created, the request passes through several Kubernetes components.
+
+```text
+kubectl run test --image=nginx
+        │
+        ▼
+   API Server
+        │
+        ▼
+      ETCD
+(Store desired state)
+        │
+        ▼
+   Scheduler
+(Selects the best Node)
+        │
+        ▼
+    API Server
+        │
+        ▼
+     Kubelet
+(On the selected Node)
+        │
+        ▼
+ Creates the Pod & Containers
+```
+
+### Responsibilities of each component
+
+* **API Server**
+
+  * Receives requests from `kubectl`.
+  * Validates the request.
+  * Stores the desired state in ETCD.
+
+* **ETCD**
+
+  * Distributed key-value database.
+  * Stores all Kubernetes cluster information.
+
+* **Scheduler**
+
+  * Selects the most suitable node for the Pod.
+  * Does **not** create the Pod.
+
+* **Kubelet**
+
+  * Runs on every worker node.
+  * Receives instructions from the API Server.
+  * Uses the container runtime (containerd) to create containers.
+
+---
+
+# 2. Create an Nginx Pod
+
+```bash
+kubectl run test --image=nginx
+```
+
+Verify the Pod:
+
+```bash
+kubectl get pods -o wide
+```
+
+The output shows:
+
+* Pod Name
+* Status
+* Node Name
+* Pod IP
+
+---
+
+# 3. Check the Container on the Worker Node
+
+SSH into the worker node.
+
+```bash
+ssh node01
+```
+
+List running containers:
+
+```bash
+crictl ps
+```
+
+View mounted filesystems:
+
+```bash
+df -hT
+```
+
+You will notice an **overlay** filesystem.
+
+Example:
+
+```
+overlay
+```
+
+This OverlayFS is the writable filesystem created for the container.
+
+---
+
+# 4. OverlayFS (Container Root Filesystem)
+
+Each container receives its own writable filesystem called **OverlayFS**.
+
+Example path:
+
+```text
+/run/containerd/io.containerd.runtime.v2.task/k8s.io/<container-id>/rootfs
+```
+
+This directory is the actual root (`/`) of the container on the host machine.
+
+---
+
+# 5. Verify the Overlay Filesystem
+
+Access the Pod.
+
+```bash
+kubectl exec -it test -- /bin/bash
+```
+
+Inside the container:
+
+```bash
+df -hT
+```
+
+You will again see:
+
+```
+overlay
+```
+
+Create a directory.
+
+```bash
+cd /
+mkdir vaibhav
+```
+
+Now exit the container.
+
+Go to the host machine.
+
+```bash
+cd /run/containerd/io.containerd.runtime.v2.task/k8s.io/<container-id>/rootfs
+```
+
+You will find:
+
+```
+vaibhav
+```
+
+This proves that the container's root filesystem is mounted from the host.
+
+---
+
+# 6. What Happens When the Pod is Deleted?
+
+Delete the Pod.
+
+```bash
+kubectl delete pod test
+```
+
+The container is removed.
+
+Since OverlayFS belongs to that container,
+
+* Overlay filesystem is deleted.
+* Container root filesystem is deleted.
+* All files created inside the container are also deleted.
+
+Therefore:
+
+> OverlayFS is temporary (ephemeral).
+
+It exists only while the container exists.
+
+---
+
+# 7. Multi-Container Pod
+
+A Pod can contain multiple containers.
+
+Example:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: multi-container-pod
+
+spec:
+  containers:
+    - name: nginx-container
+      image: nginx:latest
+      ports:
+        - containerPort: 80
+
+    - name: sidecar-container
+      image: busybox
+      command:
+        - sh
+        - -c
+        - |
+          while true; do
+            echo "Sidecar Running"
+            sleep 5
+          done
+```
+
+Create it:
+
+```bash
+kubectl apply -f multicontainer.yaml
+```
+
+Verify:
+
+```bash
+kubectl get pods
+```
+
+---
+
+# 8. Verify Containers on the Node
+
+SSH to the worker node.
+
+```bash
+ssh node01
+```
+
+List containers.
+
+```bash
+crictl ps
+```
+
+Each container has its own OverlayFS.
+
+Example:
+
+```text
+/run/containerd/io.containerd.runtime.v2.task/k8s.io/<container-id>/rootfs
+```
+
+Delete the Pod.
+
+```bash
+kubectl delete pod multi-container-pod
+```
+
+The OverlayFS directories of both containers are removed automatically.
+
+---
+
+# 9. Inspect Container Details
+
+Find the container ID.
+
+```bash
+crictl ps
+```
+
+Inspect it.
+
+```bash
+crictl inspect <container-id>
+```
+
+The output contains:
+
+* Root filesystem path
+* Mount points
+* Namespace information
+* Runtime details
+
+---
+
+# 10. Kubernetes Volumes
+
+Apart from the container's own OverlayFS, Kubernetes can mount additional volumes.
+
+Examples:
+
+* emptyDir
+* hostPath
+* PersistentVolume
+* ConfigMap
+* Secret
+* Downward API
+* Service Account Token
+
+These volumes are mounted inside the container.
+
+---
+
+# 11. Projected Volume
+
+A **Projected Volume** combines multiple Kubernetes volume sources into a single directory.
+
+Supported sources:
+
+* Secret
+* ConfigMap
+* Downward API
+* Service Account Token
+
+Instead of mounting each separately, Kubernetes merges them into one projected volume.
+
+---
+
+# 12. View Projected Volume
+
+Describe the Pod.
+
+```bash
+kubectl describe pod test
+```
+
+Under **Volumes**, you will see something like:
+
+```
+kube-api-access-xxxxx
+```
+
+This is a Projected Volume.
+
+Inside the container:
+
+```bash
+kubectl exec -it test -- /bin/bash
+```
+
+Go to:
+
+```bash
+cd /var/run/secrets/kubernetes.io/serviceaccount/
+```
+
+Files present:
+
+```
+token
+ca.crt
+namespace
+```
+
+---
+
+# 13. Locate the Projected Volume on the Worker Node
+
+Get the Pod YAML.
+
+```bash
+kubectl get pod test -o yaml
+```
+
+Copy the Pod UID.
+
+On the worker node:
+
+```bash
+cd /var/lib/kubelet/pods/
+```
+
+Open the Pod UID directory.
+
+Example:
+
+```text
+/var/lib/kubelet/pods/<pod-uid>/
+```
+
+Inside:
+
+```text
+volumes/
+```
+
+Then:
+
+```text
+kubernetes.io~projected/
+```
+
+Finally:
+
+```text
+kube-api-access-xxxxx/
+```
+
+This directory contains the same files mounted inside the container.
+
+---
+
+# 14. Purpose of Files in the Projected Volume
+
+### token
+
+* Service Account authentication token.
+* Used by the Pod to authenticate with the Kubernetes API Server.
+
+---
+
+### ca.crt
+
+* Kubernetes cluster CA certificate.
+* Used to establish a secure HTTPS connection with the API Server.
+
+---
+
+### namespace
+
+Provided by the Downward API.
+
+Contains the namespace in which the Pod is running.
+
+---
+
+# 15. How a Pod Communicates with the Kubernetes API
+
+```text
+Container
+     │
+     │ Uses Service Account Token
+     │
+     ▼
+Authenticate with API Server
+     │
+     ▼
+Uses CA Certificate (ca.crt)
+     │
+     ▼
+Secure HTTPS Connection
+     │
+     ▼
+Kubernetes API Server
+```
+
+The container uses:
+
+* **token** → Authentication
+* **ca.crt** → Secure communication
+* **namespace** → Pod metadata provided by the Downward API
+
+---
+
+# Important Interview Points
+
+* Every container has its own **OverlayFS**.
+* OverlayFS is created when the container starts and deleted when the container is removed.
+* The OverlayFS exists on the worker node where the Pod is scheduled.
+* A Pod can contain one or more containers.
+* Containers inside the same Pod share the same network namespace and can communicate using `localhost`.
+* Kubernetes volumes are separate from the container's OverlayFS.
+* A **Projected Volume** combines Secret, ConfigMap, Downward API, and Service Account Token into a single mounted directory.
+* Service Account Token allows Pods to authenticate with the Kubernetes API Server.
+* `ca.crt` verifies the API Server's identity.
+* `namespace` is provided by the Downward API.
