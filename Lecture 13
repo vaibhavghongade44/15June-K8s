@@ -1,0 +1,462 @@
+# Kubernetes Notes – Lecture 14
+# Persistent Volume & HostPath Volume
+
+=========================================================
+Persistent Volume (PV)
+=========================================================
+
+A Persistent Volume (PV) is a storage resource that provides persistent storage to Pods.
+
+✔ Data remains even if the Pod is deleted.
+✔ Used to store application data permanently.
+✔ Kubernetes manages the storage independently from the Pod.
+
+---------------------------------------------------------
+Types of Persistent Storage
+---------------------------------------------------------
+
+1. Local Storage
+2. Network Storage
+
+                Persistent Storage
+                        │
+        ┌───────────────┴───────────────┐
+        │                               │
+   Local Storage                  Network Storage
+        │                               │
+     HostPath                     NFS / SAN / NAS /
+                                 AWS EBS / Azure Disk /
+                                 GCP Persistent Disk
+
+---------------------------------------------------------
+Local Storage
+---------------------------------------------------------
+
+• Storage comes from the local disk of the Kubernetes Node.
+• Example: HostPath Volume.
+• Fast because data is stored on the local machine.
+• If the Node fails, the data is lost.
+
+---------------------------------------------------------
+Network Storage
+---------------------------------------------------------
+
+• Storage comes from a remote storage server.
+• Examples:
+  - NFS
+  - SAN
+  - NAS
+  - AWS EBS
+  - Azure Disk
+  - Google Persistent Disk
+  - Ceph
+  - Longhorn
+
+Advantages
+
+✔ Data survives Node failure.
+✔ Shared across multiple nodes.
+✔ Production ready.
+
+Disadvantage
+
+• Slightly slower than Local Storage because data travels over the network.
+
+=========================================================
+HostPath Volume
+=========================================================
+
+HostPath mounts a directory or file from the Kubernetes Node into a Pod.
+
+Characteristics
+
+✔ Uses the Node's local filesystem.
+✔ Data remains after Pod deletion.
+✔ Mainly used for Development and Testing.
+✔ Not recommended for Production.
+
+=========================================================
+Lab 1 : Create Directory on Node
+=========================================================
+
+Login to the worker node.
+
+mkdir -p /data
+
+echo "Welcome" | sudo tee /data/hostfile.txt
+
+Verify
+
+ls /data
+
+Output
+
+hostfile.txt
+
+=========================================================
+HostPath Pod YAML
+=========================================================
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hostpath-pod
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+
+    volumeMounts:
+    - name: host-volume
+      mountPath: /usr/share/nginx/html
+
+  volumes:
+  - name: host-volume
+    hostPath:
+      path: /data
+      type: Directory
+
+Deploy
+
+kubectl apply -f pod.yaml
+
+Check Pod
+
+kubectl get pods
+
+=========================================================
+Important Point
+=========================================================
+
+If /data directory does not exist on the Node and type is
+
+type: Directory
+
+Pod creation fails.
+
+Reason
+
+Kubernetes expects the directory to already exist.
+
+=========================================================
+Verify Volume
+=========================================================
+
+Login into Pod
+
+kubectl exec -it hostpath-pod -- /bin/bash
+
+Check mounted directory
+
+df -hT
+
+cd /usr/share/nginx/html
+
+ls
+
+Create file
+
+echo "Hello Kubernetes" > test.txt
+
+Exit Pod
+
+exit
+
+=========================================================
+Verify on Node
+=========================================================
+
+Login into Node
+
+cd /data
+
+ls
+
+Output
+
+hostfile.txt
+test.txt
+
+The file created inside the Pod is immediately visible on the Node.
+
+=========================================================
+Delete Pod
+=========================================================
+
+kubectl delete pod hostpath-pod
+
+Check Node
+
+cd /data
+
+ls
+
+Output
+
+hostfile.txt
+test.txt
+
+Observation
+
+✔ Pod is deleted.
+✔ Data is NOT deleted.
+
+HostPath data remains on the Node.
+
+=========================================================
+DirectoryOrCreate
+=========================================================
+
+Instead of manually creating the directory, Kubernetes can create it automatically.
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hostpath-pod
+
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+
+    volumeMounts:
+    - name: host-volume
+      mountPath: /usr/share/nginx/html
+
+  volumes:
+  - name: host-volume
+    hostPath:
+      path: /data
+      type: DirectoryOrCreate
+
+If /data does not exist,
+
+Kubernetes automatically creates
+
+/data
+
+before starting the Pod.
+
+=========================================================
+HostPath File Mount
+=========================================================
+
+Instead of mounting an entire directory,
+we can mount a single file.
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hostpath-file-pod
+
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+
+    volumeMounts:
+    - name: host-volume
+      mountPath: /usr/share/nginx/html/hostfile.txt
+      subPath: hostfile.txt
+
+  volumes:
+  - name: host-volume
+    hostPath:
+      path: /data/hostfile.txt
+      type: FileOrCreate
+
+Explanation
+
+hostPath
+
+Points to a single file
+
+/data/hostfile.txt
+
+subPath
+
+Mounts only that file instead of the entire directory.
+
+If the file doesn't exist,
+
+FileOrCreate automatically creates it.
+
+=========================================================
+HostPath Deployment Example
+=========================================================
+
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: hostpath-deployment
+
+spec:
+  replicas: 10
+
+  selector:
+    matchLabels:
+      app: hostpath-app
+
+  template:
+    metadata:
+      labels:
+        app: hostpath-app
+
+    spec:
+      containers:
+      - name: nginx
+        image: nginx
+
+        volumeMounts:
+        - name: host-volume
+          mountPath: /mnt/host
+
+      volumes:
+      - name: host-volume
+        hostPath:
+          path: /data/deployment
+          type: DirectoryOrCreate
+
+=========================================================
+What Happens in Multi-Node Cluster?
+=========================================================
+
+Suppose we have
+
+Worker-1
+Worker-2
+
+Deployment replicas = 10
+
+Scheduler may create Pods like this
+
+Worker-1
+
+Pod-1
+Pod-2
+Pod-3
+Pod-4
+Pod-5
+
+Worker-2
+
+Pod-6
+Pod-7
+Pod-8
+Pod-9
+Pod-10
+
+Each worker creates its own
+
+/data/deployment
+
+directory.
+
+Worker-1
+
+/data/deployment
+
+Worker-2
+
+/data/deployment
+
+These are completely different directories.
+
+=========================================================
+Important Interview Point
+=========================================================
+
+HostPath data is LOCAL to each Node.
+
+Worker-1
+
+/data/deployment
+
+≠
+
+Worker-2
+
+/data/deployment
+
+There is NO synchronization between them.
+
+If Pod moves to another Node,
+
+it gets that Node's local directory,
+
+NOT the previous Node's data.
+
+=========================================================
+Example
+=========================================================
+
+Worker-1
+
+/data/deployment
+
+customer.db
+
+Worker-2
+
+/data/deployment
+
+(empty)
+
+If Scheduler moves the Pod to Worker-2,
+
+customer.db is NOT available.
+
+=========================================================
+Why HostPath is Not Recommended in Production
+=========================================================
+
+✔ Data is tied to one Node.
+
+✔ No synchronization.
+
+✔ Node failure causes data loss.
+
+✔ Pods cannot access data from another Node.
+
+✔ Not portable.
+
+=========================================================
+Production Solution
+=========================================================
+
+Use Persistent Volumes backed by shared storage.
+
+Examples
+
+NFS
+
+AWS EBS
+
+Azure Disk
+
+Google Persistent Disk
+
+Ceph
+
+Longhorn
+
+=========================================================
+Summary
+=========================================================
+
+Persistent Storage
+│
+├── Local Storage
+│      └── HostPath
+│             ✔ Fast
+│             ✔ Simple
+│             ✔ Data survives Pod deletion
+│             ✘ Data lost if Node fails
+│             ✘ Not shared across Nodes
+│
+└── Network Storage
+       ✔ Shared
+       ✔ Production Ready
+       ✔ Data survives Node failure
+       ✘ Slightly slower than Local Storage
