@@ -1,0 +1,489 @@
+# Kubernetes Lecture 11 – Volumes
+
+---
+
+# 1. Default Volumes in Kubernetes
+
+Every container gets its own writable filesystem (provided by the container runtime such as containerd or CRI-O).
+
+Kubernetes also provides its own volumes that can be mounted into Pods.
+
+The most common default volume is the **Projected Volume**.
+
+---
+
+# 2. Projected Volume
+
+A Projected Volume combines data from multiple Kubernetes sources into a single directory inside the container.
+
+It can contain:
+
+- ServiceAccount Token
+- ConfigMap
+- Secret
+- Downward API
+
+```
+Projected Volume
+        │
+ ┌──────┼─────────┐
+ │      │         │
+Token ConfigMap DownwardAPI
+```
+
+---
+
+# 3. Create a Pod
+
+```bash
+kubectl run test --image=nginx
+```
+
+Check Pod
+
+```bash
+kubectl get pod
+```
+
+Enter the container
+
+```bash
+kubectl exec -it test -- /bin/bash
+```
+
+Check mounted filesystems
+
+```bash
+df -h
+```
+
+---
+
+# 4. Service Account
+
+Every namespace automatically contains a **default ServiceAccount**.
+
+Every Pod automatically gets this ServiceAccount unless another one is specified.
+
+Inside the container
+
+```bash
+cd /run/secrets/kubernetes.io/serviceaccount/
+```
+
+You'll find
+
+```
+token
+ca.crt
+namespace
+```
+
+Example
+
+```
+/run/secrets/kubernetes.io/serviceaccount/
+
+├── token
+├── ca.crt
+└── namespace
+```
+
+---
+
+# Purpose of These Files
+
+### token
+
+Authentication token used to communicate with Kubernetes API Server.
+
+### ca.crt
+
+Certificate Authority certificate used to verify the API Server.
+
+### namespace
+
+Current namespace in which the Pod is running.
+
+---
+
+# 5. Communicate with Kubernetes API Server
+
+Store the token
+
+```bash
+token=$(cat /run/secrets/kubernetes.io/serviceaccount/token)
+```
+
+Call the API
+
+```bash
+curl -k \
+-H "Authorization: Bearer $token" \
+https://<API_SERVER_IP>:6443/api/v1
+```
+
+Find API Server
+
+```bash
+kubectl cluster-info
+```
+
+Example output
+
+```
+Kubernetes control plane is running at
+
+https://172.30.1.2:6443
+```
+
+Why?
+
+Applications running inside a Pod can securely communicate with the Kubernetes API Server.
+
+Examples:
+
+- Get Pods
+- Create Pods
+- Read ConfigMaps
+- Read Secrets
+
+---
+
+# 6. Check Pod YAML
+
+```bash
+kubectl get pod test -o yaml
+```
+
+or
+
+```bash
+kubectl describe pod test
+```
+
+Look for
+
+- UID
+- Volumes
+- ServiceAccount
+
+---
+
+# 7. Projected Volume on Worker Node
+
+Every Pod has a unique UID.
+
+On the worker node
+
+```text
+/var/lib/kubelet/pods/<UID>/volumes/kubernetes.io~projected/
+```
+
+Example
+
+```
+/var/lib/kubelet/pods/
+        │
+        └── UID
+              │
+              └── volumes
+                      │
+                      └── kubernetes.io~projected
+```
+
+Delete the Pod
+
+```bash
+kubectl delete pod test
+```
+
+Result
+
+```
+Pod Deleted
+      ↓
+Projected Volume Deleted
+```
+
+Projected Volumes are temporary.
+
+---
+
+# 8. EmptyDir Volume
+
+EmptyDir is a temporary volume created when the Pod starts.
+
+Characteristics
+
+- Created when Pod starts
+- Shared among all containers in the Pod
+- Deleted when Pod is deleted
+
+```
+Pod
+ ├── Container A
+ ├── Container B
+ └── EmptyDir
+```
+
+---
+
+# EmptyDir YAML
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: emptydir-demo
+
+spec:
+  containers:
+  - name: app
+    image: nginx
+
+    volumeMounts:
+    - name: cache
+      mountPath: /cache
+
+  volumes:
+  - name: cache
+    emptyDir:
+      sizeLimit: 500Mi
+```
+
+Create Pod
+
+```bash
+kubectl apply -f emptydir.yaml
+```
+
+Verify
+
+```bash
+kubectl get pod emptydir-demo -o yaml
+```
+
+Enter Pod
+
+```bash
+kubectl exec -it emptydir-demo -- /bin/bash
+```
+
+Go to mounted directory
+
+```bash
+cd /cache
+```
+
+Create file
+
+```bash
+echo "Hello Kubernetes" > file.txt
+```
+
+Location on Worker Node
+
+```
+/var/lib/kubelet/pods/<UID>/volumes/kubernetes.io~empty-dir/
+```
+
+Delete Pod
+
+```bash
+kubectl delete pod emptydir-demo
+```
+
+Result
+
+```
+Pod Deleted
+      ↓
+EmptyDir Deleted
+```
+
+---
+
+# EmptyDir Storage
+
+Default
+
+```
+Disk
+```
+
+RAM
+
+```yaml
+volumes:
+- name: cache
+  emptyDir:
+    medium: Memory
+    sizeLimit: 500Mi
+```
+
+Useful for
+
+- Cache
+- Temporary Files
+- Session Data
+
+---
+
+# Practical Example
+
+```
+Application
+      ↓
+Generates Logs
+      ↓
+Stored in EmptyDir
+      ↓
+Backup Script
+      ↓
+Permanent Storage
+```
+
+If Pod is deleted before backup, logs are lost.
+
+---
+
+# 9. ConfigMap
+
+A ConfigMap stores configuration data separately from the container image.
+
+Instead of rebuilding the image, configuration can be mounted into the Pod.
+
+Flow
+
+```
+Local File
+     ↓
+ConfigMap
+     ↓
+Pod
+     ↓
+Container
+```
+
+Create a file
+
+```bash
+echo "Hello Vaibhav" > /tmp/sanjay.txt
+```
+
+Create ConfigMap
+
+```bash
+kubectl create configmap my-config --from-file=/tmp/sanjay.txt
+```
+
+Verify
+
+```bash
+kubectl get configmaps
+```
+
+Describe
+
+```bash
+kubectl describe configmap my-config
+```
+
+---
+
+# ConfigMap Pod YAML
+
+```yaml
+apiVersion: v1
+kind: Pod
+
+metadata:
+  name: configmap-volume-demo
+
+spec:
+  containers:
+  - name: app
+    image: nginx
+
+    volumeMounts:
+    - name: foo
+      mountPath: /etc/foo
+      readOnly: true
+
+  volumes:
+  - name: foo
+    configMap:
+      name: my-config
+```
+
+Create Pod
+
+```bash
+kubectl apply -f pod.yaml
+```
+
+Enter Pod
+
+```bash
+kubectl exec -it configmap-volume-demo -- /bin/bash
+```
+
+Check mounted files
+
+```bash
+cd /etc/foo
+ls
+cat sanjay.txt
+```
+
+Expected Output
+
+```
+Hello Vaibhav
+```
+
+---
+
+# ConfigMap Flow
+
+```
+Local File
+      │
+      ▼
+kubectl create configmap
+      │
+      ▼
+ConfigMap Stored in Kubernetes
+      │
+      ▼
+Mounted into Pod
+      │
+      ▼
+Container Reads Configuration
+```
+
+---
+
+# Summary
+
+| Volume Type | Purpose | Lifetime | Storage |
+|-------------|---------|----------|---------|
+| Projected Volume | ServiceAccount Token, ConfigMap, Secret, Downward API | Until Pod is deleted | Kubernetes Managed |
+| EmptyDir | Temporary shared storage | Until Pod is deleted | Disk or RAM |
+| ConfigMap | Configuration files | Until ConfigMap is deleted | Stored in etcd |
+
+---
+
+# Interview Questions
+
+1. What is a Projected Volume?
+2. What files are present in the ServiceAccount directory?
+3. How does a Pod communicate with the Kubernetes API Server?
+4. Where are Projected Volumes stored on the worker node?
+5. What is EmptyDir?
+6. When is EmptyDir deleted?
+7. Difference between EmptyDir and ConfigMap?
+8. What is medium: Memory in EmptyDir?
+9. Why do we use ConfigMap?
+10. Where is ConfigMap data stored?
