@@ -191,6 +191,44 @@ Example
                       │
                       └── kubernetes.io~projected
 ```
+"When a Pod is created, Kubernetes automatically mounts the ServiceAccount credentials at /run/secrets/kubernetes.io/serviceaccount. 
+This directory contains the ServiceAccount token, CA certificate, and namespace, which are used by applications inside the Pod to 
+authenticate and communicate with the Kubernetes API Server. Since these credentials are sensitive, Kubernetes mounts this volume as read-only. 
+That's why touch abc fails with a 'Read-only file system' error."
+
+Shorter version (30-second interview answer)
+
+"By default, when a Pod is created, Kubernetes mounts the ServiceAccount Secret at /run/secrets/kubernetes.io/serviceaccount. 
+This contains the token and certificates used to communicate securely with the Kubernetes API Server. Since it's a Secret volume, 
+Kubernetes mounts it as read-only for security, so we cannot create or modify files there."
+
+
+A few improvements to your original wording
+
+Instead of:
+
+"for communication of container to api-service"
+
+Say:
+
+"to authenticate and communicate with the Kubernetes API Server."
+
+Instead of:
+
+"its readonly data there"
+
+Say:
+
+"the volume is mounted as read-only to protect the credentials."
+
+
+
+A few improvements to your original wording
+
+Instead of:
+
+"for communication of container to api-service"
+
 
 Delete the Pod
 
